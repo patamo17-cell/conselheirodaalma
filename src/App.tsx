@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Send, Heart, BookOpen, Music, Sparkles, Loader2, Mic, Square } from "lucide-react";
-import { getCounsel } from "@/src/lib/gemini";
+import { Send, Heart, BookOpen, Music, Sparkles, Loader2, Mic, Square, Volume2 } from "lucide-react";
+import { getCounsel, generateAudio } from "@/src/lib/gemini";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,11 +18,64 @@ interface Message {
 export default function App() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
+  const [activePlayer, setActivePlayer] = useState<{ type: 'youtube' | 'spotify'; query: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  const [isAudioLoading, setIsAudioLoading] = useState<string | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
+  const speak = async (text: string, id: string) => {
+    try {
+      setIsAudioLoading(id);
+      const base64Audio = await generateAudio(text);
+      
+      if (!base64Audio) {
+        // Fallback to browser TTS if Gemini fails
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.lang = 'pt-BR';
+          utterance.rate = 0.9;
+          window.speechSynthesis.speak(utterance);
+        }
+        return;
+      }
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      }
+      
+      const audioContext = audioContextRef.current;
+      const binaryString = atob(base64Audio);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      
+      const int16Data = new Int16Array(bytes.buffer);
+      const float32Data = new Float32Array(int16Data.length);
+      for (let i = 0; i < int16Data.length; i++) {
+        float32Data[i] = int16Data[i] / 32768.0;
+      }
+      
+      const buffer = audioContext.createBuffer(1, float32Data.length, 24000);
+      buffer.getChannelData(0).set(float32Data);
+      
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+      source.start();
+    } catch (error) {
+      console.error("Error playing audio:", error);
+    } finally {
+      setIsAudioLoading(null);
+    }
+  };
 
   const handleSend = async (textOverride?: string, audioData?: { data: string; mimeType: string }) => {
     const messageText = typeof textOverride === 'string' ? textOverride : input;
@@ -134,7 +187,7 @@ export default function App() {
               Um refúgio de paz e orientação
             </div>
             <h1 className="text-4xl md:text-5xl font-serif font-normal text-natural-olive tracking-tight">
-              Conselheiro da Alma
+              Acolhedor
             </h1>
           </motion.div>
         </header>
@@ -181,17 +234,20 @@ export default function App() {
                               verse: "",
                               explanation: "",
                               music: "",
+                              audio: false
                             };
 
                             const verseMatch = msg.content.match(/📖 VERSÍCULO:\s*([\s\S]*?)(?=💬 EXPL[AI]NAÇÃO:|$)/i);
-                            const explanationMatch = msg.content.match(/💬 EXPL[AI]NAÇÃO:\s*([\s\S]*?)(?=🎵 SUGESTÃO MUSICAL:|$)/i);
-                            const musicMatch = msg.content.match(/🎵 SUGESTÃO MUSICAL:\s*([\s\S]*?)$/i);
+                            const explanationMatch = msg.content.match(/💬 EXPL[AI]NAÇÃO:\s*([\s\S]*?)(?=🎵 OUÇA AGORA:|$)/i);
+                            const musicMatch = msg.content.match(/🎵 OUÇA AGORA:\s*([\s\S]*?)(?=🔊 VERSÍCULO EM ÁUDIO:|$)/i);
+                            const audioMatch = msg.content.includes("🔊 VERSÍCULO EM ÁUDIO:");
 
                             if (verseMatch) sections.verse = verseMatch[1].trim();
                             if (explanationMatch) sections.explanation = explanationMatch[1].trim();
                             if (musicMatch) sections.music = musicMatch[1].trim();
+                            sections.audio = audioMatch;
 
-                            const { verse, explanation, music } = sections;
+                            const { verse, explanation, music, audio } = sections;
                             if (!verse && !explanation && !music) return <p className="text-lg font-serif italic whitespace-pre-wrap">{msg.content}</p>;
                             
                             return (
@@ -218,11 +274,79 @@ export default function App() {
                                 )}
                                 
                                 {music && (
-                                  <div className="mt-12 flex justify-center">
-                                    <div className="bg-natural-cream border border-natural-sand/30 rounded-full px-7 py-3 flex items-center gap-3 text-natural-olive font-semibold text-sm">
-                                      <Music className="w-4 h-4" />
-                                      <span>Sugestão: <strong className="font-bold">{music}</strong></span>
+                                  <div className="mt-12 flex flex-col items-center w-full">
+                                    <div className="bg-natural-cream border border-natural-sand/30 rounded-2xl md:rounded-full px-5 py-4 md:px-7 md:py-4 flex flex-col items-center gap-3 text-natural-olive font-semibold text-sm mb-4">
+                                      <div className="flex items-center gap-2">
+                                        <Music className="w-4 h-4" />
+                                        <span className="uppercase tracking-wider">🎵 OUÇA AGORA</span>
+                                      </div>
+                                      <div className="flex flex-col gap-3 w-full">
+                                        {(() => {
+                                          const ytMatch = music.match(/YouTube Music:\s*(https:\/\/\S+)/i);
+                                          const spMatch = music.match(/Spotify:\s*(https:\/\/\S+)/i);
+                                          return (
+                                            <div className="flex flex-wrap justify-center gap-4">
+                                              {ytMatch && (
+                                                <a 
+                                                  href={ytMatch[1]} 
+                                                  target="_blank" 
+                                                  rel="noopener noreferrer"
+                                                  className="flex items-center gap-2 text-xs text-natural-olive/80 hover:text-natural-olive underline transition-colors"
+                                                >
+                                                  YouTube Music
+                                                </a>
+                                              )}
+                                              {spMatch && (
+                                                <a 
+                                                  href={spMatch[1]} 
+                                                  target="_blank" 
+                                                  rel="noopener noreferrer"
+                                                  className="flex items-center gap-2 text-xs text-natural-olive/80 hover:text-natural-olive underline transition-colors"
+                                                >
+                                                  Spotify
+                                                </a>
+                                              )}
+                                            </div>
+                                          );
+                                        })()}
+                                      </div>
                                     </div>
+                                  </div>
+                                )}
+
+                                {audio && verse && (
+                                  <div className="mt-4 flex flex-col items-center gap-4">
+                                    <Button 
+                                      variant="outline" 
+                                      size="sm"
+                                      disabled={isAudioLoading === `verse-${idx}`}
+                                      onClick={() => speak(verse, `verse-${idx}`)}
+                                      className="rounded-full border-natural-olive/20 text-natural-olive hover:bg-natural-olive/5 gap-2"
+                                    >
+                                      {isAudioLoading === `verse-${idx}` ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                      ) : (
+                                        <Volume2 className="w-4 h-4" />
+                                      )}
+                                      Ouvir a Palavra
+                                    </Button>
+
+                                    {explanation && (
+                                      <Button 
+                                        variant="ghost" 
+                                        size="sm"
+                                        disabled={isAudioLoading === `expl-${idx}`}
+                                        onClick={() => speak(explanation, `expl-${idx}`)}
+                                        className="text-natural-olive/60 hover:text-natural-olive text-xs gap-2"
+                                      >
+                                        {isAudioLoading === `expl-${idx}` ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <Mic className="w-3 h-3" />
+                                        )}
+                                        Ouvir Explicação (Voz Cid Moreira)
+                                      </Button>
+                                    )}
                                   </div>
                                 )}
                               </div>

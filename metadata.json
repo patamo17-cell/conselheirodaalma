@@ -1,6 +1,6 @@
 {
-  "name": "Conselheiro da Alma",
-  "description": "Um conselheiro espiritual sábio e amoroso que oferece conforto, paz e esperança através da Palavra.",
+  "name": "Acolhedor",
+  "description": "Um conselheiro espiritual que traz conforto através da Bíblia com voz calma e sugestões musicais.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": []
 }
