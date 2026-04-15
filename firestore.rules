@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: conselheirodaalma
+    // Document ID: auto-generated or custom
+    // Fields:
+    //   - id: number (required)
+    //   - codigo: string (required)
+    //   - categoria: string (required)
+    //   - sentimentos: list of strings (optional)
+    //   - versiculo: string (required)
+    //   - referencia: string (required)
+    //   - explicacao: string (required)
+    //
+    // ===============================================================
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "patamo17@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isValidVersiculo(data) {
+      return data.id is number &&
+             data.codigo is string && data.codigo.size() > 0 &&
+             data.categoria is string && data.categoria.size() > 0 &&
+             data.versiculo is string && data.versiculo.size() > 0 &&
+             data.referencia is string && data.referencia.size() > 0 &&
+             data.explicacao is string && data.explicacao.size() > 0;
+    }
+
+    match /conselheirodaalma/{versiculoId} {
+      // Qualquer usuário autenticado pode ler os versículos
+      allow read: if isAuthenticated();
+      
+      // Apenas o administrador (você) pode criar, atualizar ou deletar versículos
+      allow create: if isAdmin() && isValidVersiculo(request.resource.data);
+      allow update: if isAdmin() && isValidVersiculo(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}

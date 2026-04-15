@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Send, Heart, BookOpen, Music, Sparkles, Loader2, Mic, Square, Volume2 } from "lucide-react";
-import { getCounsel, generateAudio } from "@/src/lib/gemini";
+import { Send, Heart, BookOpen, Music, Sparkles, Loader2, Volume2 } from "lucide-react";
+import { getCounselFromDatabase } from "@/src/lib/counselorService";
+import { auth, googleProvider } from "@/src/lib/firebase";
+import { signInWithPopup, onAuthStateChanged, User } from "firebase/auth";
+import { migrarVersiculosParaFirebase, exportarFaixaDeVersiculos } from "@/src/lib/migration";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,60 +19,54 @@ interface Message {
 }
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [activePlayer, setActivePlayer] = useState<{ type: 'youtube' | 'spotify'; query: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-
-  const [isAudioLoading, setIsAudioLoading] = useState<string | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+      
+      // Se for você (admin), tenta migrar os dados se o banco estiver vazio
+      if (currentUser?.email === "patamo17@gmail.com") {
+        migrarVersiculosParaFirebase().catch(console.error);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Erro ao fazer login:", error);
+    }
+  };
 
   const speak = async (text: string, id: string) => {
     try {
       setIsAudioLoading(id);
-      const base64Audio = await generateAudio(text);
       
-      if (!base64Audio) {
-        // Fallback to browser TTS if Gemini fails
-        if ('speechSynthesis' in window) {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.lang = 'pt-BR';
-          utterance.rate = 0.9;
-          window.speechSynthesis.speak(utterance);
-        }
-        return;
-      }
+      // Use browser TTS directly to avoid Gemini API dependency
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'pt-BR';
+        utterance.rate = 0.9;
+        
+        // Find a calm voice if available
+        const voices = window.speechSynthesis.getVoices();
+        const ptVoice = voices.find(v => v.lang.includes('pt-BR'));
+        if (ptVoice) utterance.voice = ptVoice;
 
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        window.speechSynthesis.speak(utterance);
       }
-      
-      const audioContext = audioContextRef.current;
-      const binaryString = atob(base64Audio);
-      const len = binaryString.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      
-      const int16Data = new Int16Array(bytes.buffer);
-      const float32Data = new Float32Array(int16Data.length);
-      for (let i = 0; i < int16Data.length; i++) {
-        float32Data[i] = int16Data[i] / 32768.0;
-      }
-      
-      const buffer = audioContext.createBuffer(1, float32Data.length, 24000);
-      buffer.getChannelData(0).set(float32Data);
-      
-      const source = audioContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(audioContext.destination);
-      source.start();
     } catch (error) {
       console.error("Error playing audio:", error);
     } finally {
@@ -77,13 +74,13 @@ export default function App() {
     }
   };
 
-  const handleSend = async (textOverride?: string, audioData?: { data: string; mimeType: string }) => {
+  const handleSend = async (textOverride?: string) => {
     const messageText = typeof textOverride === 'string' ? textOverride : input;
-    if ((!messageText.trim() && !audioData) || isLoading) return;
+    if (!messageText.trim() || isLoading) return;
 
     const userMessage: Message = {
       role: "user",
-      content: audioData ? "🎤 Mensagem de áudio enviada" : messageText,
+      content: messageText,
       timestamp: new Date(),
     };
 
@@ -92,7 +89,7 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const response = await getCounsel(messageText, audioData);
+      const response = await getCounselFromDatabase(messageText);
       const assistantMessage: Message = {
         role: "assistant",
         content: response || "Desculpe, não consegui processar sua mensagem agora. Tente novamente em instantes.",
@@ -111,51 +108,20 @@ export default function App() {
     }
   };
 
-  const startRecording = async () => {
+  const [isAudioLoading, setIsAudioLoading] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExport = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
-        ? 'audio/webm' 
-        : MediaRecorder.isTypeSupported('audio/mp4')
-          ? 'audio/mp4'
-          : 'audio/ogg';
-
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-        const reader = new FileReader();
-        reader.readAsDataURL(audioBlob);
-        reader.onloadend = () => {
-          const base64Audio = (reader.result as string).split(',')[1];
-          handleSend("", { data: base64Audio, mimeType });
-        };
-        
-        // Stop all tracks to release microphone
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-    } catch (err) {
-      console.error("Error accessing microphone:", err);
-      alert("Não foi possível acessar o microfone. Por favor, verifique as permissões.");
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
+      const result = await exportarFaixaDeVersiculos(21, 100);
+      alert(result);
+    } catch (error) {
+      console.error("Erro na exportação:", error);
+      alert("Erro ao exportar versículos.");
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -167,6 +133,36 @@ export default function App() {
       }
     }
   }, [messages, isLoading]);
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-natural-bg flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-natural-olive" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-natural-bg flex items-center justify-center p-4">
+        <Card className="max-w-md w-full p-8 text-center space-y-6 rounded-[40px] border-natural-olive/5 shadow-xl">
+          <div className="w-20 h-20 bg-natural-cream rounded-full flex items-center justify-center mx-auto">
+            <Heart className="w-10 h-10 text-natural-olive" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-2xl font-serif text-natural-olive">Bem-vindo ao Conselheiro</h2>
+            <p className="text-natural-sage">Para receber orientação espiritual, por favor, identifique-se.</p>
+          </div>
+          <Button 
+            onClick={handleLogin}
+            className="w-full h-12 rounded-full bg-natural-olive hover:bg-natural-olive/90 text-white gap-2"
+          >
+            Entrar com Google
+          </Button>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-natural-bg text-natural-ink font-sans selection:bg-natural-sand/30 overflow-x-hidden">
@@ -187,8 +183,22 @@ export default function App() {
               Um refúgio de paz e orientação
             </div>
             <h1 className="text-4xl md:text-5xl font-serif font-normal text-natural-olive tracking-tight">
-              Acolhedor
+              Conselheiro da Alma
             </h1>
+            {user?.email === "patamo17@gmail.com" && (
+              <div className="mt-4">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleExport}
+                  disabled={isExporting}
+                  className="rounded-full border-natural-olive/20 text-natural-olive hover:bg-natural-olive/5"
+                >
+                  {isExporting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                  Exportar Versículos 21-100
+                </Button>
+              </div>
+            )}
           </motion.div>
         </header>
 
@@ -342,9 +352,9 @@ export default function App() {
                                         {isAudioLoading === `expl-${idx}` ? (
                                           <Loader2 className="w-3 h-3 animate-spin" />
                                         ) : (
-                                          <Mic className="w-3 h-3" />
+                                          <Volume2 className="w-3 h-3" />
                                         )}
-                                        Ouvir Explicação (Voz Cid Moreira)
+                                        Ouvir Explicação
                                       </Button>
                                     )}
                                   </div>
@@ -380,35 +390,21 @@ export default function App() {
             <div className="relative flex items-center max-w-2xl mx-auto w-full gap-2">
               <div className="relative flex-1 flex items-center">
                 <Input
-                  placeholder={isRecording ? "Gravando áudio..." : "Desabafe aqui..."}
+                  placeholder="Diga o que seu coração está sentindo"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                  disabled={isRecording}
                   className="w-full h-12 md:h-14 bg-white border-natural-olive/10 focus-visible:ring-natural-olive rounded-full px-5 md:px-6 text-sm md:text-base italic font-sans placeholder:text-[#B0B0A0] shadow-sm transition-all"
                 />
                 <Button
                   size="icon"
                   onClick={() => handleSend()}
-                  disabled={!input.trim() || isLoading || isRecording}
+                  disabled={!input.trim() || isLoading}
                   className="absolute right-1.5 w-9 h-9 md:w-10 md:h-10 rounded-full bg-natural-olive hover:bg-natural-olive/90 text-white shadow-md disabled:opacity-50"
                 >
                   <Send className="w-3.5 h-3.5 md:w-4 md:h-4" />
                 </Button>
               </div>
-              
-              <Button
-                size="icon"
-                onClick={isRecording ? stopRecording : startRecording}
-                disabled={isLoading}
-                className={`w-12 h-12 md:w-14 md:h-14 rounded-full shadow-lg transition-all shrink-0 ${
-                  isRecording 
-                    ? "bg-red-500 hover:bg-red-600 text-white animate-pulse" 
-                    : "bg-natural-cream border border-natural-olive/10 text-natural-olive hover:bg-natural-sand/20"
-                }`}
-              >
-                {isRecording ? <Square className="w-4 h-4 md:w-5 md:h-5" /> : <Mic className="w-4 h-4 md:w-5 md:h-5" />}
-              </Button>
             </div>
           </footer>
         </Card>

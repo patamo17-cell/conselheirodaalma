@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "Versiculo": {
+      "title": "Versiculo",
+      "description": "Um versículo bíblico com explicação e metadados",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "codigo": { "type": "string" },
+        "categoria": { "type": "string" },
+        "sentimentos": { 
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "versiculo": { "type": "string" },
+        "referencia": { "type": "string" },
+        "explicacao": { "type": "string" }
+      },
+      "required": ["id", "codigo", "categoria", "versiculo", "referencia", "explicacao"]
+    }
+  },
+  "firestore": {
+    "/conselheirodaalma/{versiculoId}": {
+      "schema": "Versiculo",
+      "description": "Coleção de versículos bíblicos para o app Conselheiro da Alma"
+    }
+  }
+}
