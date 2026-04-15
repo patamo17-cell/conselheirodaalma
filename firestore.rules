@@ -47,5 +47,21 @@ service cloud.firestore {
       allow update: if isAdmin() && isValidVersiculo(request.resource.data);
       allow delete: if isAdmin();
     }
+
+    match /users/{userId} {
+      // Admin pode tudo. Usuário pode ler seu próprio perfil.
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      
+      // Usuário pode criar seu perfil ao logar.
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      
+      // Apenas admin pode mudar o status PREMIUM.
+      // Usuário pode atualizar outros campos (como lastLogin).
+      allow update: if isAdmin() || (
+        isAuthenticated() && 
+        request.auth.uid == userId && 
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['isPremium']))
+      );
+    }
   }
 }

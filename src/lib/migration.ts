@@ -20,43 +20,19 @@ export async function migrarVersiculosParaFirebase() {
     
     bancoVersiculos.versiculos.forEach((v) => {
       const docRef = doc(db, path, v.codigo); // Usamos o código como ID do documento
-      batch.set(docRef, v);
+      
+      // Adicionar um link de exemplo para teste se for da categoria Ansiedade
+      const data: any = { ...v };
+      if (v.categoria === "Ansiedade e Preocupação") {
+        data.youtubeMusicUrl = "https://music.youtube.com/watch?v=dQw4w9WgXcQ"; // Exemplo (Rick Astley para teste, mude depois)
+      }
+      
+      batch.set(docRef, data);
     });
 
     await batch.commit();
     console.log("Migração concluída com sucesso!");
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
-  }
-}
-
-export async function exportarFaixaDeVersiculos(minId: number, maxId: number) {
-  if (!auth.currentUser) {
-    throw new Error("Você precisa estar logado para exportar os dados.");
-  }
-
-  const path = 'conselheirodaalma';
-  try {
-    const batch = writeBatch(db);
-    let count = 0;
-    
-    bancoVersiculos.versiculos.forEach((v) => {
-      if (v.id >= minId && v.id <= maxId) {
-        const docRef = doc(db, path, v.codigo);
-        batch.set(docRef, v);
-        count++;
-      }
-    });
-
-    if (count > 0) {
-      await batch.commit();
-      console.log(`${count} versículos exportados com sucesso!`);
-      return `${count} versículos exportados com sucesso!`;
-    } else {
-      return "Nenhum versículo encontrado na faixa especificada.";
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-    throw error;
   }
 }

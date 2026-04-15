@@ -1,18 +1,6 @@
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
-
-const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
-  "Ansiedade e Preocupação": ["ansiedade", "preocupação", "nervosismo", "medo do futuro", "ansioso", "preocupado", "aflição", "inquieto"],
-  "Medo e Insegurança": ["medo", "insegurança", "pavor", "incerteza", "assustado", "inseguro", "temor", "receio"],
-  "Tristeza e Depressão": ["tristeza", "desânimo", "angústia", "depressão", "triste", "abatido", "choro", "chorando", "infeliz"],
-  "Solidão e Abandono": ["solidão", "vazio", "abandono", "rejeição", "sozinho", "abandonado", "isolado"],
-  "Cansaço e Desânimo": ["cansaço", "fadiga", "esgotamento", "falta de força", "cansado", "exausto", "sem forças", "fraco"],
-  "Perda e Luto": ["luto", "perda", "saudade", "dor da separação", "morreu", "faleceu", "morte", "partiu"],
-  "Gratidão e Alegria": ["gratidão", "alegria", "felicidade", "louvor", "feliz", "obrigado", "agradecido", "vitoria"],
-  "Perdão e Culpa": ["culpa", "perdão", "arrependimento", "condenação", "culpado", "perdoar", "erro", "falha"],
-  "Direção e Decisões": ["direção", "decisão", "escolha", "confusão", "duvida", "caminho", "orientação", "passo"],
-  "Providência e Finanças": ["escassez", "finanças", "provisão", "necessidade", "dinheiro", "falta", "contas", "trabalho", "emprego"]
-};
+import { CATEGORIAS_KEYWORDS } from './constants';
 
 function normalizeText(text: string): string {
   return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -42,6 +30,12 @@ export async function getCounselFromDatabase(message: string): Promise<string> {
 
     const docs = querySnapshot.docs;
     const randomDoc = docs[Math.floor(Math.random() * docs.length)].data();
+    let musicUrl = randomDoc.youtubeMusicUrl || `https://music.youtube.com/search?q=${encodeURIComponent(randomDoc.categoria + " gospel")}`;
+    
+    // Adicionar autoplay se for um link direto de música
+    if (musicUrl.includes('watch?v=') && !musicUrl.includes('autoplay=')) {
+      musicUrl += musicUrl.includes('?') ? '&autoplay=1' : '?autoplay=1';
+    }
 
     // Formatar a resposta no padrão esperado pela UI
     return `📖 VERSÍCULO:
@@ -52,7 +46,7 @@ ${randomDoc.explicacao}
 
 🎵 OUÇA AGORA:
 
-YouTube Music: https://music.youtube.com/search?q=${encodeURIComponent(randomDoc.categoria + " gospel")}
+YouTube Music: ${musicUrl}
 
 Spotify: https://open.spotify.com/search/${encodeURIComponent(randomDoc.categoria + " gospel")}
 
