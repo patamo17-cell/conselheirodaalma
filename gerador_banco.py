@@ -125,7 +125,7 @@ def gerar_banco_completo():
     }
 
     def criar_explicacao(categoria):
-        return (f"Meu amado, receba essa palavra profética diretamente no seu espírito! Eu sei que a luta contra essa {categoria.lower()} tem sido intensa, mas declare comigo agora: 'O meu Deus é maior e a vitória já é minha!'. "
+        return (f"Alma querida, receba essa palavra profética diretamente no seu espírito! Eu sei que a luta contra essa {categoria.lower()} tem sido intensa, mas declare agora: 'O meu Deus é maior e a vitória já é minha!'. "
                 "Essa situação não tem poder sobre a sua vida porque você está debaixo da unção e da proteção do Altíssimo. Em nome de Jesus, eu profetizo que as correntes da opressão estão caindo por terra hoje pelo poder do Espírito Santo. "
                 "O Senhor está soprando um fôlego novo sobre você, trazendo paz, provisão e abrindo portas onde o mundo disse que estava fechado. Não aceite o desânimo, pois o Senhor já assinou o seu decreto de libertação e prosperidade. "
                 "Tome posse da sua benção, declare a sua vitória e descanse no poder do sangue de Jesus, pois o melhor de Deus ainda está por vir na sua vida!")
@@ -133,7 +133,7 @@ def gerar_banco_completo():
     sentimentos_map = {
         "Ansiedade e Preocupação": ["ansiedade", "preocupação", "nervosismo", "medo do futuro"],
         "Medo e Insegurança": ["medo", "insegurança", "pavor", "incerteza"],
-        "Tristeza e Depressão": ["tristeza", "desânimo", "angústia", "depressão"],
+        "Tristeza Profunda e Angústia": ["tristeza", "desânimo", "angústia"],
         "Solidão e Abandono": ["solidão", "vazio", "abandono", "rejeição"],
         "Cansaço e Desânimo": ["cansaço", "fadiga", "esgotamento", "falta de força"],
         "Perda e Luto": ["luto", "perda", "saudade", "dor da separação"],

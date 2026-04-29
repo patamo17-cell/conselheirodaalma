@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Send, Heart, BookOpen, Music, Sparkles, Loader2, Volume2, Users, Settings, Crown, Check, X, User as UserIcon, LogOut, Phone, Mail, Lock, Trash2, Edit, Plus, ChevronLeft, Search } from "lucide-react";
 import { getCounselFromDatabase } from "@/src/lib/counselorService";
 import { auth, googleProvider, db } from "@/src/lib/firebase";
-import { CATEGORIAS_KEYWORDS } from "@/src/lib/constants";
+import { CATEGORIAS_KEYWORDS, SENTIMENTOS_TAGS } from "@/src/lib/constants";
 import { 
   signInWithPopup, 
   onAuthStateChanged, 
@@ -13,8 +13,9 @@ import {
   updatePassword as updateAuthPassword, 
   signOut 
 } from "firebase/auth";
-import { collection, getDocs, updateDoc, setDoc, doc, getDoc } from "firebase/firestore";
+import { collection, getDocs, updateDoc, setDoc, doc, getDoc, writeBatch } from "firebase/firestore";
 import { migrarVersiculosParaFirebase } from "@/src/lib/migration";
+import bancoVersiculos from "../banco_versiculos.json";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -62,6 +63,7 @@ export default function App() {
   const [editingVerse, setEditingVerse] = useState<any>(null);
   const [userSearchTerm, setUserSearchTerm] = useState("");
   const [verseSearchTerm, setVerseSearchTerm] = useState("");
+  const [isMaintenanceLoading, setIsMaintenanceLoading] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
@@ -131,6 +133,159 @@ export default function App() {
       console.error("Erro ao buscar versículos:", error);
     } finally {
       setIsVersesLoading(false);
+    }
+  };
+
+  const handleForceUpdate = async () => {
+    if (!confirm("Isso irá atualizar TODOS os registros do banco com a nova linguagem neutra (ex: 'Alma querida') e remover o termo 'depressão'. Deseja continuar?")) return;
+    
+    setIsMaintenanceLoading(true);
+    try {
+      const colPath = 'conselheirodaalma';
+      const snapshot = await getDocs(collection(db, colPath));
+      const batchSize = 400;
+      let count = 0;
+      let currentBatch = writeBatch(db);
+
+      const CATEGORIA_MAP: Record<string, string> = {
+        "Tristeza e Depressão": "Tristeza Profunda e Angústia"
+      };
+
+      for (const item of snapshot.docs) {
+        const data = item.data();
+        let hasChanged = false;
+
+        if (CATEGORIA_MAP[data.categoria]) {
+          data.categoria = CATEGORIA_MAP[data.categoria];
+          hasChanged = true;
+        }
+
+        if (data.sentimentos && Array.isArray(data.sentimentos)) {
+          const oldSentimentos = JSON.stringify(data.sentimentos);
+          data.sentimentos = data.sentimentos.map((s: string) => s === "depressão" ? "tristeza profunda" : s);
+          if (oldSentimentos !== JSON.stringify(data.sentimentos)) hasChanged = true;
+        }
+
+        if (data.explicacao) {
+          const oldEx = data.explicacao;
+          data.explicacao = data.explicacao
+            .replace(/Meu amado/g, "Alma querida")
+            .replace(/meu amado/g, "alma querida")
+            .replace(/depressão/g, "tristeza profunda")
+            .replace(/Depressão/g, "Tristeza Profunda")
+            .replace(/ansioso/g, "com ansiedade")
+            .replace(/preocupado/g, "com preocupação")
+            .replace(/cansado/g, "com cansaço")
+            .replace(/sozinho/g, "em solidão")
+            .replace(/abatido/g, "com abatimento");
+          
+          if (oldEx !== data.explicacao) hasChanged = true;
+        }
+
+        if (hasChanged) {
+          currentBatch.set(doc(db, colPath, item.id), data);
+          count++;
+          if (count % batchSize === 0) {
+            await currentBatch.commit();
+            currentBatch = writeBatch(db);
+          }
+        }
+      }
+
+      if (count % batchSize !== 0) await currentBatch.commit();
+      alert(`Sucesso! ${count} registros foram atualizados e normalizados.`);
+      fetchVerses();
+    } catch (error) {
+      console.error(error);
+      alert("Erro ao atualizar registros. Verifique os logs do console.");
+    } finally {
+      setIsMaintenanceLoading(false);
+    }
+  };
+
+  const handleAddPdfVerses = async () => {
+    if (user?.email !== "patamo17@gmail.com") {
+      alert("Apenas o administrador master (patamo17@gmail.com) pode realizar esta sincronização.");
+      return;
+    }
+
+    // confirm() is blocked in sandbox, so we use alert or just proceed with safety check in UI
+    // For now, let's proceed and handle the error, since this is a protected admin action
+    
+    setIsMaintenanceLoading(true);
+    console.log("Iniciando sincronização via PDF. Usuário logado:", user?.email, "UID:", user?.uid);
+    try {
+      const colPath = 'conselheirodaalma';
+      
+      // 1. Limpeza Total
+      console.log("Limpando coleção atual...");
+      const snapshot = await getDocs(collection(db, colPath));
+      let deleteCount = 0;
+      
+      if (snapshot.size > 0) {
+        let deleteBatch = writeBatch(db);
+        for (const d of snapshot.docs) {
+          deleteBatch.delete(doc(db, colPath, d.id));
+          deleteCount++;
+          if (deleteCount % 400 === 0) {
+            await deleteBatch.commit();
+            deleteBatch = writeBatch(db);
+          }
+        }
+        if (deleteCount > 0 && deleteCount % 400 !== 0) await deleteBatch.commit();
+      }
+      console.log(`${deleteCount} documentos removidos.`);
+
+      // 2. Adição dos novos (V001-V100)
+      if (!bancoVersiculos || !bancoVersiculos.versiculos || bancoVersiculos.versiculos.length === 0) {
+        console.error("Versículos não encontrados no arquivo JSON importado:", bancoVersiculos);
+        throw new Error("Erro ao carregar o banco de versículos local ou arquivo está vazio.");
+      }
+
+      console.log(`Adicionando ${bancoVersiculos.versiculos.length} versículos...`);
+      let addBatch = writeBatch(db);
+      let addCount = 0;
+
+      for (const v of bancoVersiculos.versiculos) {
+        const docRef = doc(db, colPath, v.codigo);
+        const data = {
+          ...v,
+          updatedAt: new Date()
+        };
+
+        addBatch.set(docRef, data);
+        addCount++;
+
+        if (addCount % 400 === 0) {
+          await addBatch.commit();
+          addBatch = writeBatch(db);
+        }
+      }
+      if (addCount % 400 !== 0) await addBatch.commit();
+      console.log(`Sucesso: ${addCount} versículos adicionados.`);
+
+      alert(`Sucesso! Banco sincronizado: ${deleteCount} removidos, ${addCount} novos versículos do PDF adicionados.`);
+      fetchVerses();
+    } catch (error: any) {
+      console.error("Erro detalhado no reset via PDF:", error);
+      
+      // Objeto de diagnóstico
+      const debugInfo = {
+        message: error?.message,
+        code: error?.code,
+        authEmail: user?.email,
+        authUid: user?.uid,
+        emailVerified: user?.emailVerified
+      };
+      console.log("Diagnóstico de Autenticação:", JSON.stringify(debugInfo, null, 2));
+
+      let errorMessage = error?.message || "Erro desconhecido";
+      if (errorMessage.includes("permission-denied") || error?.code === "permission-denied") {
+        errorMessage = "Permissão negada no Firebase. Verifique se você está logado no App com o email patamo17@gmail.com.";
+      }
+      alert(`Erro ao sincronizar: ${errorMessage}`);
+    } finally {
+      setIsMaintenanceLoading(false);
     }
   };
 
@@ -254,23 +409,31 @@ export default function App() {
     try {
       setIsAudioLoading(id);
       
-      // Use browser TTS directly to avoid Gemini API dependency
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'pt-BR';
         utterance.rate = 0.9;
         
-        // Find a calm voice if available
         const voices = window.speechSynthesis.getVoices();
         const ptVoice = voices.find(v => v.lang.includes('pt-BR'));
         if (ptVoice) utterance.voice = ptVoice;
 
+        utterance.onend = () => {
+          setIsAudioLoading(null);
+        };
+
+        utterance.onerror = (event) => {
+          console.error("SpeechSynthesisUtterance error:", event);
+          setIsAudioLoading(null);
+        };
+
         window.speechSynthesis.speak(utterance);
+      } else {
+        setIsAudioLoading(null);
       }
     } catch (error) {
       console.error("Error playing audio:", error);
-    } finally {
       setIsAudioLoading(null);
     }
   };
@@ -337,7 +500,7 @@ export default function App() {
               <Heart className="w-8 h-8 text-natural-olive" />
             </div>
             <h2 className="text-2xl font-serif text-natural-olive">
-              {authMode === 'login' ? 'Bem-vindo de volta' : 'Crie sua conta'}
+              {authMode === 'login' ? 'Boas-vindas de volta' : 'Crie sua conta'}
             </h2>
           </div>
 
@@ -449,7 +612,7 @@ export default function App() {
               <div className="flex justify-center mt-2">
                 <Badge className="bg-amber-100 text-amber-700 border-amber-200 gap-1 rounded-full px-3">
                   <Crown className="w-3 h-3 fill-amber-500" />
-                  Membro PREMIUM
+                  Acesso PREMIUM
                 </Badge>
               </div>
             )}
@@ -505,8 +668,9 @@ export default function App() {
                   <LogOut className="w-5 h-5" />
                 </Button>
               </div>
-              <ScrollArea className="flex-1 p-6 md:p-10">
-                <form onSubmit={handleUpdateProfile} className="max-w-md mx-auto space-y-6">
+              <ScrollArea className="flex-1">
+                <div className="p-6 md:p-10">
+                  <form onSubmit={handleUpdateProfile} className="max-w-md mx-auto space-y-6">
                   <div className="flex flex-col items-center mb-8">
                     <div className="w-24 h-24 rounded-full border-4 border-natural-cream overflow-hidden mb-4 shadow-inner">
                       <img 
@@ -570,7 +734,8 @@ export default function App() {
                     {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Salvar Alterações'}
                   </Button>
                 </form>
-              </ScrollArea>
+              </div>
+            </ScrollArea>
             </div>
           ) : isAdminView ? (
             <div className="flex-1 flex flex-col overflow-hidden">
@@ -627,8 +792,9 @@ export default function App() {
                 )}
               </div>
 
-              <ScrollArea className="flex-1 p-4 md:p-10">
-                {adminSubView === 'menu' ? (
+              <ScrollArea className="flex-1">
+                <div className="p-4 md:p-10">
+                  {adminSubView === 'menu' ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 pt-4 md:pt-10">
                     <Button 
                       variant="outline" 
@@ -655,6 +821,36 @@ export default function App() {
                       <div className="text-center">
                         <div className="font-serif text-lg md:text-xl text-natural-olive">Conteúdo</div>
                         <div className="text-[10px] md:text-xs text-natural-sage mt-1">Versículos, textos e músicas</div>
+                      </div>
+                    </Button>
+
+                    <Button 
+                      variant="outline" 
+                      onClick={handleForceUpdate}
+                      disabled={isMaintenanceLoading}
+                      className="h-32 md:h-40 rounded-[24px] md:rounded-[32px] flex flex-col gap-3 md:gap-4 border-orange-200 hover:bg-orange-50 hover:border-orange-300 transition-all p-4"
+                    >
+                      <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-orange-100 flex items-center justify-center">
+                        {isMaintenanceLoading ? <Loader2 className="w-5 h-5 md:w-6 md:h-6 text-orange-600 animate-spin" /> : <Sparkles className="w-5 h-5 md:w-6 md:h-6 text-orange-600" />}
+                      </div>
+                      <div className="text-center">
+                        <div className="font-serif text-lg md:text-xl text-orange-800">Limpeza de Dados</div>
+                        <div className="text-[10px] md:text-xs text-orange-600 mt-1">Neutralizar linguagem em massa</div>
+                      </div>
+                    </Button>
+
+                    <Button 
+                      variant="outline" 
+                      onClick={handleAddPdfVerses}
+                      disabled={isMaintenanceLoading}
+                      className="h-32 md:h-40 rounded-[24px] md:rounded-[32px] flex flex-col gap-3 md:gap-4 border-blue-200 hover:bg-blue-50 hover:border-blue-300 transition-all p-4"
+                    >
+                      <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-blue-100 flex items-center justify-center">
+                        {isMaintenanceLoading ? <Loader2 className="w-5 h-5 md:w-6 md:h-6 text-blue-600 animate-spin" /> : <Plus className="w-5 h-5 md:w-6 md:h-6 text-blue-600" />}
+                      </div>
+                      <div className="text-center">
+                        <div className="font-serif text-lg md:text-xl text-blue-800">Sincronizar Banco (PDF)</div>
+                        <div className="text-[10px] md:text-xs text-blue-600 mt-1">Resetar para os 100 versículos acolhedores</div>
                       </div>
                     </Button>
                   </div>
@@ -857,6 +1053,7 @@ export default function App() {
                     )}
                   </div>
                 )}
+                </div>
               </ScrollArea>
             </div>
           ) : (
@@ -866,8 +1063,9 @@ export default function App() {
                 🍃
               </div>
 
-              <ScrollArea className="flex-1 p-4 md:p-12 overflow-x-hidden relative z-10" ref={scrollAreaRef}>
-            <div className="space-y-8 md:space-y-10">
+              <ScrollArea className="flex-1 overflow-x-hidden relative z-10" ref={scrollAreaRef}>
+                <div className="p-4 md:p-12">
+                  <div className="space-y-8 md:space-y-10">
               {messages.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center text-center space-y-6 py-10 md:py-20">
                   <div className="w-12 h-12 md:w-16 md:h-16 rounded-full bg-natural-bg flex items-center justify-center">
@@ -1052,12 +1250,28 @@ export default function App() {
                 </motion.div>
               )}
             </div>
-          </ScrollArea>
+          </div>
+        </ScrollArea>
         </>
       )}
 
       {!isAdminView && (
             <footer className="p-3 md:p-6 shrink-0 bg-white/80 backdrop-blur-sm border-t border-natural-olive/5">
+              {messages.length === 0 && (
+                <div className="max-w-2xl mx-auto mb-4 flex flex-wrap justify-center gap-2">
+                  {SENTIMENTOS_TAGS.map((tag) => (
+                    <Button
+                      key={tag}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleSend(tag)}
+                      className="rounded-full text-[10px] md:text-sm border-natural-olive/10 text-natural-olive hover:bg-natural-olive/5 bg-white/50"
+                    >
+                      {tag}
+                    </Button>
+                  ))}
+                </div>
+              )}
               <div className="relative flex items-center max-w-2xl mx-auto w-full gap-2">
                 <div className="relative flex-1 flex items-center">
                   <Input

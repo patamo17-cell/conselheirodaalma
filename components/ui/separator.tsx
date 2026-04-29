@@ -1,16 +1,17 @@
 "use client"
 
+import * as React from "react"
 import { Separator as SeparatorPrimitive } from "@base-ui/react/separator"
 
 import { cn } from "@/lib/utils"
 
-function Separator({
-  className,
-  orientation = "horizontal",
-  ...props
-}: SeparatorPrimitive.Props) {
+const Separator = React.forwardRef<
+  HTMLDivElement,
+  SeparatorPrimitive.Props
+>(({ className, orientation = "horizontal", ...props }, ref) => {
   return (
     <SeparatorPrimitive
+      ref={ref}
       data-slot="separator"
       orientation={orientation}
       className={cn(
@@ -20,6 +21,7 @@ function Separator({
       {...props}
     />
   )
-}
+})
+Separator.displayName = "Separator"
 
 export { Separator }
